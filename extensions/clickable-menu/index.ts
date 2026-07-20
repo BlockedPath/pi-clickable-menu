@@ -1,8 +1,8 @@
 /**
  * Clickable TUI Menu Extension
  *
- * Full-viewport overlay so mouse row/col map 1:1 to the rendered grid.
- * (Centered floating panels fail under Herdr when hit-tests don't match paint.)
+ * Compact centered overlay so the session stays visible around the panel.
+ * (Terminals cannot alpha-blend; only unpainted cells show through.)
  *
  * Commands:
  *   /menu              open the menu
@@ -115,14 +115,11 @@ const DEBUG_LOG = "/tmp/clickable-menu-debug.log";
 const MOUSE_ENABLE = "\x1b[?1006h\x1b[?1000h\x1b[?1003h";
 const MOUSE_DISABLE = "\x1b[?1003l\x1b[?1000l\x1b[?1006l";
 
-// Full viewport: paint grid === mouse grid (fixes Herdr coordinate mismatch).
+// Compact centered panel — only the menu covers the session (transparent backdrop).
 const OVERLAY: OverlayOptions = {
-	anchor: "top-left",
-	row: 0,
-	col: 0,
-	width: "100%",
-	maxHeight: "100%",
-	margin: 0,
+	anchor: "center",
+	width: 58,
+	minWidth: 34,
 };
 
 let debugEnabled = process.env.PI_MENU_DEBUG === "1";
@@ -209,13 +206,6 @@ function parseMouse(data: string): MouseEvent | null {
 	return null;
 }
 
-function padCenter(text: string, width: number): string {
-	const w = visibleWidth(text);
-	if (w >= width) return truncateToWidth(text, width, "");
-	const left = Math.floor((width - w) / 2);
-	const right = width - w - left;
-	return `${" ".repeat(left)}${text}${" ".repeat(right)}`;
-}
 
 function boxLine(
 	content: string,
@@ -245,9 +235,9 @@ class ClickableMenuComponent implements Component {
 	private selected = 0;
 	private mouseEnabled = false;
 	private closed = false;
-	/** Absolute 0-based screen rows for each item (full-viewport render). */
+	/** Absolute 0-based screen rows for each item (matches TUI center placement). */
 	private itemScreenRows: number[] = [];
-	/** Inclusive panel bounds (0-based). */
+	/** Inclusive panel bounds in absolute screen coords (0-based). */
 	private panel = { top: 0, bottom: 0, left: 0, right: 0 };
 	private reenableTimer?: ReturnType<typeof setTimeout>;
 
@@ -478,130 +468,82 @@ class ClickableMenuComponent implements Component {
 	}
 
 	/**
-	 * Paint a full-viewport dim backdrop with a centered menu panel.
-	 * Line index in the returned array === screen row (overlay at 0,0 100%).
+	 * Paint only the menu panel. TUI centers this overlay; unpainted cells leave
+	 * the session visible underneath (no full-screen dim backdrop).
 	 */
 	render(width: number): string[] {
 		this.enableMouse(true);
 
 		const theme = this.theme;
 		const termRows = Math.max(3, this.tui.terminal.rows || 24);
-		const termCols = Math.max(20, width);
+		const termCols = Math.max(20, this.tui.terminal.columns || width);
+		const panelWidth = Math.max(20, width);
+		const panelInner = Math.max(1, panelWidth - 2);
 
-		// Panel geometry
-		const panelInner = Math.min(56, Math.max(32, termCols - 8));
-		const panelWidth = panelInner + 2; // borders
-		const panelLeft = Math.max(0, Math.floor((termCols - panelWidth) / 2));
-		const panelRight = panelLeft + panelWidth - 1;
-
-		// Content rows inside panel: top border, title, blank, items, blank, hint, bottom
+		// Content rows: top border, title, blank, items, blank, hint, bottom
 		const contentRows = 1 + 1 + 1 + this.items.length + 1 + 1 + 1;
-		const panelTop = Math.max(0, Math.floor((termRows - contentRows) / 2));
-		const panelBottom = panelTop + contentRows - 1;
+		// Mirror TUI center-anchor placement for absolute mouse hit-testing.
+		const overlayRow = Math.max(0, Math.floor((termRows - contentRows) / 2));
+		const overlayCol = Math.max(0, Math.floor((termCols - panelWidth) / 2));
 
 		this.panel = {
-			top: panelTop,
-			bottom: panelBottom,
-			left: panelLeft,
-			right: panelRight,
+			top: overlayRow,
+			bottom: overlayRow + contentRows - 1,
+			left: overlayCol,
+			right: overlayCol + panelWidth - 1,
 		};
 		this.itemScreenRows = [];
-
-		const lines: string[] = [];
-		const dimBg = (s: string) => theme.fg("dim", s);
 
 		const hBar = theme.fg("accent", "─".repeat(panelInner));
 		const topBorder = theme.fg("accent", "┌") + hBar + theme.fg("accent", "┐");
 		const botBorder = theme.fg("accent", "└") + hBar + theme.fg("accent", "┘");
 
-		const place = (rowText: string): string => {
-			// rowText is the panel segment; pad to full terminal width.
-			const leftPad = " ".repeat(panelLeft);
+		const lines: string[] = [];
+		const push = (rowText: string): void => {
 			const mid = truncateToWidth(rowText, panelWidth, "");
-			const used = panelLeft + visibleWidth(mid);
-			const rightPad = " ".repeat(Math.max(0, termCols - used));
-			return truncateToWidth(leftPad + mid + rightPad, termCols, "");
+			const pad = Math.max(0, panelWidth - visibleWidth(mid));
+			lines.push(mid + " ".repeat(pad));
 		};
 
-		const emptyScreen = (): string => dimBg(" ".repeat(termCols));
+		push(topBorder);
 
-		for (let r = 0; r < termRows; r++) {
-			if (r < panelTop || r > panelBottom) {
-				lines.push(emptyScreen());
-				continue;
-			}
+		const title = theme.fg("accent", theme.bold(` ${this.title}`));
+		push(boxLine(title, panelInner, theme));
+		push(boxLine("", panelInner, theme));
 
-			const local = r - panelTop;
-			if (local === 0) {
-				lines.push(place(topBorder));
-				continue;
-			}
-			if (local === 1) {
-				const title = theme.fg("accent", theme.bold(` ${this.title}`));
-				lines.push(place(boxLine(title, panelInner, theme)));
-				continue;
-			}
-			if (local === 2) {
-				lines.push(place(boxLine("", panelInner, theme)));
-				continue;
-			}
-
-			const itemStart = 3;
-			const itemEnd = itemStart + this.items.length - 1;
-			if (local >= itemStart && local <= itemEnd) {
-				const i = local - itemStart;
-				this.itemScreenRows.push(r);
-				const item = this.items[i]!;
-				const isSel = i === this.selected;
-				const num = `${i + 1}.`;
-				const hot =
-					item.hotkey && !(item.hotkey >= "1" && item.hotkey <= "9")
-						? ` [${item.hotkey}]`
-						: "";
-				const prefix = isSel ? "→ " : "  ";
-				const desc = item.description ? ` — ${item.description}` : "";
-				const raw = `${prefix}${num} ${item.label}${hot}${desc}`;
-				const styled = isSel
-					? theme.fg("accent", theme.bold(raw))
-					: theme.fg("text", raw);
-				lines.push(place(boxLine(` ${styled}`, panelInner, theme, isSel)));
-				continue;
-			}
-
-			if (local === itemEnd + 1) {
-				lines.push(place(boxLine("", panelInner, theme)));
-				continue;
-			}
-			if (local === itemEnd + 2) {
-				const hint = theme.fg("dim", " click row · ↑↓ · 1-9 · esc ");
-				lines.push(place(boxLine(hint, panelInner, theme)));
-				continue;
-			}
-			if (local === itemEnd + 3) {
-				lines.push(place(botBorder));
-				continue;
-			}
-
-			lines.push(emptyScreen());
+		for (let i = 0; i < this.items.length; i++) {
+			this.itemScreenRows.push(overlayRow + 3 + i);
+			const item = this.items[i]!;
+			const isSel = i === this.selected;
+			const num = `${i + 1}.`;
+			const hot =
+				item.hotkey && !(item.hotkey >= "1" && item.hotkey <= "9")
+					? ` [${item.hotkey}]`
+					: "";
+			const prefix = isSel ? "→ " : "  ";
+			const desc = item.description ? ` — ${item.description}` : "";
+			const raw = `${prefix}${num} ${item.label}${hot}${desc}`;
+			const styled = isSel
+				? theme.fg("accent", theme.bold(raw))
+				: theme.fg("text", raw);
+			push(boxLine(` ${styled}`, panelInner, theme, isSel));
 		}
 
-		// Safety: exact height, exact width
-		while (lines.length < termRows) lines.push(emptyScreen());
-		if (lines.length > termRows) lines.length = termRows;
-
-		const safe = lines.map((l) =>
-			visibleWidth(l) > termCols ? truncateToWidth(l, termCols, "") : l,
-		);
+		push(boxLine("", panelInner, theme));
+		const hint = theme.fg("dim", " click row · ↑↓ · 1-9 · esc ");
+		push(boxLine(hint, panelInner, theme));
+		push(botBorder);
 
 		debugLog("render", {
 			termRows,
 			termCols,
+			panelWidth,
 			panel: this.panel,
 			itemScreenRows: this.itemScreenRows,
 			selected: this.selected,
 		});
 
-		return safe;
+		return lines;
 	}
 }
 
