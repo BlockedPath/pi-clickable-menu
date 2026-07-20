@@ -22,6 +22,7 @@
   ],
   "files": [
     "extensions",
+    "assets",
     "clickable-menu.example.json",
     "README.md",
     "LICENSE"
@@ -29,7 +30,8 @@
   "pi": {
     "extensions": [
       "./extensions/clickable-menu"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/BlockedPath/pi-clickable-menu/main/assets/preview.jpg"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
