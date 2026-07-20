@@ -1,0 +1,46 @@
+{
+  "title": "Quick Menu",
+  "items": [
+    {
+      "id": "plan",
+      "label": "Plan mode prompt",
+      "description": "Insert a planning prompt into the editor",
+      "hotkey": "p",
+      "action": {
+        "type": "insert",
+        "text": "Explore the codebase and draft a concrete implementation plan for: "
+      }
+    },
+    {
+      "id": "review",
+      "label": "Review recent changes",
+      "description": "Ask for a focused code review",
+      "hotkey": "r",
+      "action": {
+        "type": "submit",
+        "text": "Review the recent local changes. Focus on bugs, regressions, and missing tests."
+      }
+    },
+    {
+      "id": "tests",
+      "label": "Suggest tests",
+      "description": "Ask what tests to add",
+      "hotkey": "t",
+      "action": {
+        "type": "submit",
+        "text": "What tests should I add for the current change? Be specific about cases and files."
+      }
+    },
+    {
+      "id": "hello",
+      "label": "Hello notification",
+      "description": "Sanity-check that the menu works",
+      "hotkey": "h",
+      "action": {
+        "type": "notify",
+        "message": "Clickable menu is working.",
+        "level": "info"
+      }
+    }
+  ]
+}

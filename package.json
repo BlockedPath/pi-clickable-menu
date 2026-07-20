@@ -1,0 +1,48 @@
+{
+  "name": "pi-clickable-menu",
+  "version": "0.1.0",
+  "description": "Pi extension: full-viewport clickable TUI quick menu with mouse hover, keyboard, and configurable actions",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/BlockedPath/pi-clickable-menu#readme",
+  "bugs": {
+    "url": "https://github.com/BlockedPath/pi-clickable-menu/issues"
+  },
+  "main": "./extensions/clickable-menu/index.ts",
+  "exports": {
+    ".": "./extensions/clickable-menu/index.ts"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "tui",
+    "menu",
+    "mouse",
+    "overlay"
+  ],
+  "files": [
+    "extensions",
+    "clickable-menu.example.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/clickable-menu"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BlockedPath/pi-clickable-menu.git"
+  }
+}
