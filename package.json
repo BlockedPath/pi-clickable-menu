@@ -1,7 +1,7 @@
 {
   "name": "pi-clickable-menu",
   "version": "0.1.0",
-  "description": "Pi extension: full-viewport clickable TUI quick menu with mouse hover, keyboard, and configurable actions",
+  "description": "Pi extension: clickable TUI quick menu with transparent session backdrop, mouse hover, keyboard, and configurable actions",
   "type": "module",
   "license": "MIT",
   "homepage": "https://github.com/BlockedPath/pi-clickable-menu#readme",

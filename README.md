@@ -1,8 +1,8 @@
 # pi-clickable-menu
 
-Pi extension: a **full-viewport clickable TUI quick menu** with mouse hover highlight, keyboard navigation, and configurable actions.
+Pi extension: a **clickable TUI quick menu** with mouse hover highlight, keyboard navigation, and configurable actions.
 
-Uses a full-viewport overlay so mouse row/col map 1:1 to the rendered grid (works under Herdr where centered floating panels can mis-hit).
+Uses a compact centered overlay so your session stays visible around the panel (terminals cannot alpha-blend; only unpainted cells show through).
 
 ## Install
 
