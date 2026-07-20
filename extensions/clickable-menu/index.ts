@@ -1,9 +1,9 @@
 /**
  * Clickable TUI Menu Extension
  *
- * Compact panel overlay. Geometry is recomputed from the live terminal size
- * (and clamped like pi-tui) on every paint and mouse event so session/buffer
- * height changes cannot desync hit-tests from where TUI composites the panel.
+ * Full-viewport overlay (row 0, col 0, 100% x 100%) so mouse screen coords map
+ * 1:1 to paint lines. Non-panel cells re-paint the current TUI viewport so the
+ * session stays visible and long sessions cannot desync hit-tests.
  *
  * Commands:
  *   /menu              open the menu
@@ -25,6 +25,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
 	Key,
 	matchesKey,
+	sliceByColumn,
 	truncateToWidth,
 	type Component,
 	type OverlayOptions,
@@ -175,19 +176,18 @@ const DEBUG_LOG = "/tmp/clickable-menu-debug.log";
 const MOUSE_ENABLE = "\x1b[?1006h\x1b[?1000h\x1b[?1003h";
 const MOUSE_DISABLE = "\x1b[?1003l\x1b[?1000l\x1b[?1006l";
 
-// Shared layout object: layoutPanel() writes row/col/width each paint; TUI reads
-// them immediately after render() when resolving final placement (same frame).
-// Using absolute row/col (not anchor) so we control the exact screen position.
+// Full viewport: paint grid === mouse grid. Panel is drawn centered inside.
 function createOverlayLayout(): OverlayOptions {
 	return {
 		row: 0,
 		col: 0,
-		width: 58,
-		minWidth: 34,
+		width: "100%",
+		maxHeight: "100%",
+		margin: 0,
 	};
 }
 
-/** Mirror pi-tui resolveOverlayLayout center + edge clamp (margin 0). */
+/** Center + clamp panel inside the terminal (margin 0), matching pi-tui. */
 function clampOverlayOrigin(
 	termRows: number,
 	termCols: number,
@@ -198,10 +198,8 @@ function clampOverlayOrigin(
 	const w = Math.max(1, panelWidth);
 	const rows = Math.max(1, termRows);
 	const cols = Math.max(1, termCols);
-	// center
 	let row = Math.floor((rows - h) / 2);
 	let col = Math.floor((cols - w) / 2);
-	// clamp like tui.js resolveOverlayLayout
 	row = Math.max(0, Math.min(row, rows - h));
 	col = Math.max(0, Math.min(col, cols - w));
 	return { row, col };
@@ -452,17 +450,21 @@ class ClickableMenuComponent implements Component {
 		}
 	}
 
+	private static readonly PANEL_WIDTH = 58;
+
 	/**
-	 * Recompute panel screen bounds from live terminal + session buffer size.
-	 * Must match pi-tui compositeOverlays: overlay screen row === layout.row + i.
+	 * Panel geometry inside the full-viewport overlay.
+	 * Overlay itself is always at (0,0) 100%x100% so screen row === line index.
 	 */
-	private layoutPanel(panelWidth: number): boolean {
+	private layoutPanel(): boolean {
 		const termRows = Math.max(3, this.tui.terminal.rows || 24);
-		const termCols = Math.max(20, this.tui.terminal.columns || panelWidth);
-		const width = Math.max(20, Math.min(panelWidth, termCols));
+		const termCols = Math.max(20, this.tui.terminal.columns || 80);
+		const width = Math.max(
+			20,
+			Math.min(ClickableMenuComponent.PANEL_WIDTH, termCols),
+		);
 		const contentRows = 1 + 1 + 1 + this.items.length + 1 + 1 + 1;
 
-		// Session/buffer size from TUI private state (best-effort).
 		const tuiAny = this.tui as unknown as {
 			previousLines?: string[];
 			previousViewportTop?: number;
@@ -470,8 +472,7 @@ class ClickableMenuComponent implements Component {
 		const contentLineCount = Array.isArray(tuiAny.previousLines)
 			? tuiAny.previousLines.length
 			: termRows;
-		// Same workingHeight/viewportStart formula as tui compositeOverlays.
-		const workingHeight = Math.max(contentLineCount, termRows, contentRows);
+		const workingHeight = Math.max(contentLineCount, termRows);
 		const viewportStart = Math.max(0, workingHeight - termRows);
 
 		const { row: panelTop, col: panelLeft } = clampOverlayOrigin(
@@ -483,10 +484,11 @@ class ClickableMenuComponent implements Component {
 
 		const prevKey = `${this.panel.top},${this.panel.left},${this.panel.right},${this.contentLineCount},${this.viewportStart}`;
 
-		// Drive TUI placement for this frame (object identity === overlayOptions).
-		this.overlayLayout.row = panelTop;
-		this.overlayLayout.col = panelLeft;
-		this.overlayLayout.width = width;
+		// Keep overlay pinned to full viewport for 1:1 mouse mapping.
+		this.overlayLayout.row = 0;
+		this.overlayLayout.col = 0;
+		this.overlayLayout.width = "100%";
+		this.overlayLayout.maxHeight = "100%";
 
 		this.panel = {
 			top: panelTop,
@@ -520,9 +522,8 @@ class ClickableMenuComponent implements Component {
 	}
 
 	private handleMouse(ev: MouseEvent): void {
-		// Re-sync geometry to current terminal + session buffer before hit-testing.
-		const width = Math.max(20, Number(this.overlayLayout.width) || 58);
-		const moved = this.layoutPanel(width);
+		// Re-sync panel geometry from live terminal/session size.
+		const moved = this.layoutPanel();
 		if (moved) this.tui.requestRender();
 
 		debugLog("mouse", {
@@ -534,11 +535,10 @@ class ClickableMenuComponent implements Component {
 			panel: this.panel,
 		});
 
-		const screenRow = ev.row - 1; // 0-based screen row (SGR is viewport-relative)
+		const screenRow = ev.row - 1; // 0-based screen row
 		const screenCol = ev.col - 1;
 		const itemIndex = this.itemIndexAt(screenRow, screenCol);
 
-		// Hover / drag motion: highlight item under cursor, never activate.
 		if (ev.motion) {
 			this.hoverItem(itemIndex);
 			return;
@@ -551,7 +551,6 @@ class ClickableMenuComponent implements Component {
 		}
 
 		if (ev.release || ev.wheel) return;
-		// Strict left press only (button 0 after stripping motion bit).
 		if (ev.button !== 0) return;
 
 		const { top, bottom, left, right } = this.panel;
@@ -583,36 +582,38 @@ class ClickableMenuComponent implements Component {
 			return;
 		}
 
-		// Chrome inside panel (title/border/hint): keep open.
 		this.enableMouse(true);
 		this.tui.requestRender();
 	}
 
 	/**
-	 * Paint only the menu panel. layoutPanel() writes absolute screen row/col
-	 * into overlayLayout so TUI composites at the same coords we hit-test.
+	 * Full-viewport paint: each line is termCols wide.
+	 * - Outside the panel: copy current TUI viewport session cells.
+	 * - Inside the panel: draw menu chrome/items.
+	 * Overlay is at (0,0) so mouse row/col == line index / column.
 	 */
-	render(width: number): string[] {
+	render(_width: number): string[] {
 		this.enableMouse(true);
+		this.layoutPanel();
 
 		const theme = this.theme;
-		this.layoutPanel(Math.max(20, width));
-		const panelWidth = Math.max(20, Number(this.overlayLayout.width) || width);
+		const termRows = Math.max(3, this.tui.terminal.rows || 24);
+		const termCols = Math.max(20, this.tui.terminal.columns || 80);
+		const { top: panelTop, bottom: panelBottom, left: panelLeft, right: panelRight } =
+			this.panel;
+		const panelWidth = panelRight - panelLeft + 1;
 		const panelInner = Math.max(1, panelWidth - 2);
-		const { top: panelTop } = this.panel;
+
+		// Visible session slice (bottom of content buffer).
+		const tuiAny = this.tui as unknown as { previousLines?: string[] };
+		const prev = Array.isArray(tuiAny.previousLines) ? tuiAny.previousLines : [];
+		const viewportStart = Math.max(0, prev.length - termRows);
 
 		const hBar = theme.fg("accent", "-".repeat(panelInner));
 		const topBorder = theme.fg("accent", "+") + hBar + theme.fg("accent", "+");
 		const botBorder = theme.fg("accent", "+") + hBar + theme.fg("accent", "+");
-
-		const paintPanelRow = (rowText: string): string => {
-			const mid = truncateToWidth(rowText, panelWidth, "");
-			const pad = Math.max(0, panelWidth - visibleWidth(mid));
-			return mid + " ".repeat(pad);
-		};
-
-		const lines: string[] = [];
 		const edge = theme.fg("accent", "|");
+
 		const box = (content: string, selected = false): string => {
 			const body = truncateToWidth(content, panelInner, "");
 			const pad = Math.max(0, panelInner - visibleWidth(body));
@@ -621,11 +622,11 @@ class ClickableMenuComponent implements Component {
 			return edge + filled + edge;
 		};
 
-		lines.push(paintPanelRow(topBorder));
+		const panelRows: string[] = [];
+		panelRows.push(topBorder);
 		const title = theme.fg("accent", theme.bold(` ${this.title}`));
-		lines.push(paintPanelRow(box(title)));
-		lines.push(paintPanelRow(box("")));
-
+		panelRows.push(box(title));
+		panelRows.push(box(""));
 		for (let i = 0; i < this.items.length; i++) {
 			const item = this.items[i]!;
 			const isSel = i === this.selected;
@@ -634,29 +635,72 @@ class ClickableMenuComponent implements Component {
 				item.hotkey && !(item.hotkey >= "1" && item.hotkey <= "9")
 					? ` [${item.hotkey}]`
 					: "";
-			// Fixed-width ASCII chrome (Unicode arrows can be double-width).
 			const prefix = isSel ? "> " : "  ";
 			const desc = item.description ? ` - ${item.description}` : "";
 			const raw = `${prefix}${num} ${item.label}${hot}${desc}`;
 			const styled = isSel
 				? theme.fg("accent", theme.bold(raw))
 				: theme.fg("text", raw);
-			lines.push(paintPanelRow(box(` ${styled}`, isSel)));
+			panelRows.push(box(` ${styled}`, isSel));
+		}
+		panelRows.push(box(""));
+		const hint = theme.fg("dim", " click row | up/down | 1-9 | esc ");
+		panelRows.push(box(hint));
+		panelRows.push(botBorder);
+
+		const padPanel = (rowText: string): string => {
+			const mid = truncateToWidth(rowText, panelWidth, "");
+			const pad = Math.max(0, panelWidth - visibleWidth(mid));
+			return mid + " ".repeat(pad);
+		};
+
+		const placePanel = (screenRow: number, panelText: string): string => {
+			const base = prev[viewportStart + screenRow] ?? "";
+			const left = sliceByColumn(base, 0, panelLeft, true);
+			const rightStart = panelLeft + panelWidth;
+			const right = sliceByColumn(
+				base,
+				rightStart,
+				Math.max(0, termCols - rightStart),
+				true,
+			);
+			const leftPad = Math.max(0, panelLeft - visibleWidth(left));
+			const mid = padPanel(panelText);
+			const composed = left + " ".repeat(leftPad) + mid + right;
+			const w = visibleWidth(composed);
+			if (w > termCols) return truncateToWidth(composed, termCols, "");
+			if (w < termCols) return composed + " ".repeat(termCols - w);
+			return composed;
+		};
+
+		const lines: string[] = [];
+		for (let r = 0; r < termRows; r++) {
+			if (r < panelTop || r > panelBottom) {
+				// Full-width session row (or blank) — no panel strip.
+				const base = prev[viewportStart + r] ?? "";
+				const w = visibleWidth(base);
+				if (w === 0) lines.push(" ".repeat(termCols));
+				else if (w > termCols) lines.push(truncateToWidth(base, termCols, ""));
+				else if (w < termCols) lines.push(base + " ".repeat(termCols - w));
+				else lines.push(base);
+				continue;
+			}
+			const local = r - panelTop;
+			const panelText = panelRows[local] ?? "";
+			lines.push(placePanel(r, panelText));
 		}
 
-		lines.push(paintPanelRow(box("")));
-		const hint = theme.fg("dim", " click row | up/down | 1-9 | esc ");
-		lines.push(paintPanelRow(box(hint)));
-		lines.push(paintPanelRow(botBorder));
+		while (lines.length < termRows) lines.push(" ".repeat(termCols));
+		if (lines.length > termRows) lines.length = termRows;
 
 		debugLog("render", {
-			termRows: this.tui.terminal.rows,
-			termCols: this.tui.terminal.columns,
+			termRows,
+			termCols,
 			panelWidth,
-			contentRows: lines.length,
+			contentRows: panelRows.length,
 			contentLineCount: this.contentLineCount,
 			viewportStart: this.viewportStart,
-			// TUI paints overlay at screen row = layout.row (viewport-relative).
+			prevLen: prev.length,
 			layout: {
 				row: this.overlayLayout.row,
 				col: this.overlayLayout.col,
@@ -665,8 +709,6 @@ class ClickableMenuComponent implements Component {
 			panel: this.panel,
 			itemScreenRows: this.itemScreenRows,
 			selected: this.selected,
-			// Buffer index of panel top if you need to correlate with scrollback.
-			bufferTop: this.viewportStart + panelTop,
 		});
 
 		return lines;
