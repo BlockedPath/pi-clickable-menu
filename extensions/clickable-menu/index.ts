@@ -1,8 +1,8 @@
 /**
  * Clickable TUI Menu Extension
  *
- * Full-height, panel-width overlay (row 0, centered col) so mouse row/col match
- * the paint grid 1:1. Empty lines outside the panel leave the session visible.
+ * Compact centered overlay: only the menu panel is painted (session stays
+ * visible around it). Hit-tests use the same center math as TUI placement.
  *
  * Commands:
  *   /menu              open the menu
@@ -174,14 +174,12 @@ const DEBUG_LOG = "/tmp/clickable-menu-debug.log";
 const MOUSE_ENABLE = "\x1b[?1006h\x1b[?1000h\x1b[?1003h";
 const MOUSE_DISABLE = "\x1b[?1003l\x1b[?1000l\x1b[?1006l";
 
-// Full-height strip, horizontally centered: mouse Y maps 1:1 to line index.
-// Empty lines outside the panel keep the session visible (sides + above/below).
+// Compact panel only — no full-height blank strip (that covered the session).
+// TUI re-centers every paint via anchor; we mirror that for mouse hit-tests.
 const OVERLAY: OverlayOptions = {
-	row: 0,
-	col: "50%",
+	anchor: "center",
 	width: 58,
 	minWidth: 34,
-	maxHeight: "100%",
 };
 
 let debugEnabled = process.env.PI_MENU_DEBUG === "1";
@@ -297,9 +295,9 @@ class ClickableMenuComponent implements Component {
 	private selected = 0;
 	private mouseEnabled = false;
 	private closed = false;
-	/** Absolute 0-based screen rows for each item (line index === screen row). */
+	/** Absolute 0-based screen rows for each item (mirrors TUI center placement). */
 	private itemScreenRows: number[] = [];
-	/** Inclusive panel bounds in screen coords (0-based; overlay at row 0). */
+	/** Inclusive panel bounds in screen coords (0-based). */
 	private panel = { top: 0, bottom: 0, left: 0, right: 0 };
 	private reenableTimer?: ReturnType<typeof setTimeout>;
 
@@ -447,25 +445,8 @@ class ClickableMenuComponent implements Component {
 			screenCol >= left &&
 			screenCol <= right;
 		if (!insidePanel) return -1;
-
-		let itemIndex = this.itemScreenRows.indexOf(screenRow);
-		if (itemIndex < 0 && this.itemScreenRows.length > 0) {
-			const first = this.itemScreenRows[0]!;
-			const last = this.itemScreenRows[this.itemScreenRows.length - 1]!;
-			if (screenRow >= first && screenRow <= last) {
-				let best = 0;
-				let bestDist = Math.abs(this.itemScreenRows[0]! - screenRow);
-				for (let i = 1; i < this.itemScreenRows.length; i++) {
-					const d = Math.abs(this.itemScreenRows[i]! - screenRow);
-					if (d < bestDist) {
-						best = i;
-						bestDist = d;
-					}
-				}
-				itemIndex = best;
-			}
-		}
-		return itemIndex;
+		// Strict row match only — no nearest-row fuzzy (that felt like misalignment).
+		return this.itemScreenRows.indexOf(screenRow);
 	}
 
 	private hoverItem(itemIndex: number): void {
@@ -530,9 +511,8 @@ class ClickableMenuComponent implements Component {
 	}
 
 	/**
-	 * Full-height strip at row 0: line index === screen row for hit-testing.
-	 * Horizontally only the panel width is composited (session shows on sides).
-	 * Empty lines above/below the panel leave a blank band only as wide as the menu.
+	 * Paint only the menu panel (contentRows lines). TUI centers via anchor;
+	 * we store the same screen bounds for mouse hit-testing.
 	 */
 	render(width: number): string[] {
 		this.enableMouse(true);
@@ -540,15 +520,14 @@ class ClickableMenuComponent implements Component {
 		const theme = this.theme;
 		const termRows = Math.max(3, this.tui.terminal.rows || 24);
 		const termCols = Math.max(20, this.tui.terminal.columns || width);
-		// `width` is TUI's resolved overlay width (respects minWidth / terminal).
+		// `width` is TUI's resolved overlay width (minWidth / terminal clamp).
 		const panelWidth = Math.max(20, width);
 		const panelInner = Math.max(1, panelWidth - 2);
 
 		// Content rows: top border, title, blank, items, blank, hint, bottom
 		const contentRows = 1 + 1 + 1 + this.items.length + 1 + 1 + 1;
-		// Overlay is pinned at row 0 with maxHeight 100%, so screen row === line index.
+		// Match TUI resolveAnchorRow/Col for anchor: "center" (margin 0).
 		const panelTop = Math.max(0, Math.floor((termRows - contentRows) / 2));
-		// col: "50%" → same formula as TUI resolveOverlayLayout center.
 		const panelLeft = Math.max(0, Math.floor((termCols - panelWidth) / 2));
 
 		this.panel = {
@@ -570,75 +549,41 @@ class ClickableMenuComponent implements Component {
 		};
 
 		const lines: string[] = [];
-		for (let r = 0; r < termRows; r++) {
-			if (r < panelTop || r >= panelTop + contentRows) {
-				// Empty → compositor pads this strip with spaces (panel-width only).
-				lines.push("");
-				continue;
-			}
+		lines.push(paintPanelRow(topBorder));
 
-			const local = r - panelTop;
-			if (local === 0) {
-				lines.push(paintPanelRow(topBorder));
-				continue;
-			}
-			if (local === 1) {
-				const title = theme.fg("accent", theme.bold(` ${this.title}`));
-				lines.push(paintPanelRow(boxLine(title, panelInner, theme)));
-				continue;
-			}
-			if (local === 2) {
-				lines.push(paintPanelRow(boxLine("", panelInner, theme)));
-				continue;
-			}
+		const title = theme.fg("accent", theme.bold(` ${this.title}`));
+		lines.push(paintPanelRow(boxLine(title, panelInner, theme)));
+		lines.push(paintPanelRow(boxLine("", panelInner, theme)));
 
-			const itemStart = 3;
-			const itemEnd = itemStart + this.items.length - 1;
-			if (local >= itemStart && local <= itemEnd) {
-				const i = local - itemStart;
-				this.itemScreenRows.push(r);
-				const item = this.items[i]!;
-				const isSel = i === this.selected;
-				const num = `${i + 1}.`;
-				const hot =
-					item.hotkey && !(item.hotkey >= "1" && item.hotkey <= "9")
-						? ` [${item.hotkey}]`
-						: "";
-				const prefix = isSel ? "→ " : "  ";
-				const desc = item.description ? ` — ${item.description}` : "";
-				const raw = `${prefix}${num} ${item.label}${hot}${desc}`;
-				const styled = isSel
-					? theme.fg("accent", theme.bold(raw))
-					: theme.fg("text", raw);
-				lines.push(paintPanelRow(boxLine(` ${styled}`, panelInner, theme, isSel)));
-				continue;
-			}
-
-			if (local === itemEnd + 1) {
-				lines.push(paintPanelRow(boxLine("", panelInner, theme)));
-				continue;
-			}
-			if (local === itemEnd + 2) {
-				const hint = theme.fg("dim", " click row · ↑↓ · 1-9 · esc ");
-				lines.push(paintPanelRow(boxLine(hint, panelInner, theme)));
-				continue;
-			}
-			if (local === itemEnd + 3) {
-				lines.push(paintPanelRow(botBorder));
-				continue;
-			}
-
-			lines.push("");
+		for (let i = 0; i < this.items.length; i++) {
+			// Item rows start after top border + title + blank.
+			this.itemScreenRows.push(panelTop + 3 + i);
+			const item = this.items[i]!;
+			const isSel = i === this.selected;
+			const num = `${i + 1}.`;
+			const hot =
+				item.hotkey && !(item.hotkey >= "1" && item.hotkey <= "9")
+					? ` [${item.hotkey}]`
+					: "";
+			const prefix = isSel ? "→ " : "  ";
+			const desc = item.description ? ` — ${item.description}` : "";
+			const raw = `${prefix}${num} ${item.label}${hot}${desc}`;
+			const styled = isSel
+				? theme.fg("accent", theme.bold(raw))
+				: theme.fg("text", raw);
+			lines.push(paintPanelRow(boxLine(` ${styled}`, panelInner, theme, isSel)));
 		}
 
-		// Exact terminal height for 1:1 mouse mapping.
-		while (lines.length < termRows) lines.push("");
-		if (lines.length > termRows) lines.length = termRows;
+		lines.push(paintPanelRow(boxLine("", panelInner, theme)));
+		const hint = theme.fg("dim", " click row · ↑↓ · 1-9 · esc ");
+		lines.push(paintPanelRow(boxLine(hint, panelInner, theme)));
+		lines.push(paintPanelRow(botBorder));
 
 		debugLog("render", {
 			termRows,
 			termCols,
 			panelWidth,
+			contentRows,
 			panel: this.panel,
 			itemScreenRows: this.itemScreenRows,
 			selected: this.selected,
