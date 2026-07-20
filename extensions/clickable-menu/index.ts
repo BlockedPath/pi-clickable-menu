@@ -39,6 +39,26 @@ type MenuAction =
 	| { type: "notify"; message: string; level?: NotifyLevel }
 	| { type: "insert"; text: string }
 	| { type: "submit"; text: string }
+	/** Prefill the editor with a slash command (user presses Enter to run). */
+	| { type: "command"; command: string }
+	/**
+	 * Drive xAI network tools via pi-xai-oauth event bridge.
+	 * Requires pi-xai-oauth loaded and an xAI/Grok model selected for enable/open.
+	 */
+	| {
+			type: "xai_tool";
+			action: "open" | "status" | "enable" | "disable";
+			tool?: string;
+	  }
+	/** Run a shell command via pi.exec (optional confirm). */
+	| {
+			type: "shell";
+			command: string;
+			args?: string[];
+			cwd?: string;
+			timeoutMs?: number;
+			confirm?: boolean;
+	  }
 	| { type: "none" };
 
 interface MenuItemConfig {
@@ -94,6 +114,45 @@ const DEFAULT_CONFIG: MenuConfig = {
 			},
 		},
 		{
+			id: "xai-tools",
+			label: "xAI tools picker",
+			description: "Open /xai-tools (enable paid Grok tools)",
+			hotkey: "x",
+			action: { type: "xai_tool", action: "open" },
+		},
+		{
+			id: "web-search",
+			label: "Enable web_search",
+			description: "Opt-in Grok-native web search for this session",
+			hotkey: "w",
+			action: { type: "xai_tool", action: "enable", tool: "web_search" },
+		},
+		{
+			id: "x-search",
+			label: "Enable X search",
+			description: "Opt-in xai_x_search for this session",
+			action: { type: "xai_tool", action: "enable", tool: "xai_x_search" },
+		},
+		{
+			id: "deep-research",
+			label: "Enable deep research",
+			description: "Opt-in xai_deep_research (high cost)",
+			action: { type: "xai_tool", action: "enable", tool: "xai_deep_research" },
+		},
+		{
+			id: "gen-image",
+			label: "Enable image gen",
+			description: "Opt-in xai_generate_image",
+			action: { type: "xai_tool", action: "enable", tool: "xai_generate_image" },
+		},
+		{
+			id: "xai-status",
+			label: "xAI tools status",
+			description: "Show which xAI tools are enabled",
+			hotkey: "s",
+			action: { type: "xai_tool", action: "status" },
+		},
+		{
 			id: "hello",
 			label: "Hello notification",
 			description: "Sanity-check that the menu works",
@@ -105,7 +164,7 @@ const DEFAULT_CONFIG: MenuConfig = {
 			},
 		},
 	],
-};
+}
 
 const CONFIG_PATH = join(getAgentDir(), "clickable-menu.json");
 const DEBUG_LOG = "/tmp/clickable-menu-debug.log";
@@ -549,6 +608,114 @@ class ClickableMenuComponent implements Component {
 
 // ── Actions ──────────────────────────────────────────────────────────────────
 
+const XAI_TOOLS_MENU_CHANNEL = "pi-clickable-menu:xai-tools";
+
+function isCommandContext(
+	ctx: ExtensionContext | ExtensionCommandContext,
+): ctx is ExtensionCommandContext {
+	return typeof (ctx as ExtensionCommandContext).waitForIdle === "function";
+}
+
+function normalizeSlashCommand(command: string): string {
+	const trimmed = command.trim();
+	if (!trimmed) return "";
+	return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+async function runXaiToolAction(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext | ExtensionCommandContext,
+	action: Extract<MenuAction, { type: "xai_tool" }>,
+): Promise<void> {
+	if (!isCommandContext(ctx)) {
+		ctx.ui.notify(
+			"xAI tools actions need a command context (open via /menu or Ctrl+Shift+M).",
+			"error",
+		);
+		return;
+	}
+
+	const result = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+		let settled = false;
+		const finish = (value: { ok: boolean; error?: string }) => {
+			if (settled) return;
+			settled = true;
+			resolve(value);
+		};
+		const timer = setTimeout(() => {
+			finish({
+				ok: false,
+				error:
+					"No xAI tools bridge response. Is pi-xai-oauth installed and reloaded?",
+			});
+		}, 4000);
+		try {
+			pi.events.emit(XAI_TOOLS_MENU_CHANNEL, {
+				action: action.action,
+				tool: action.tool,
+				ctx,
+				done: (value: { ok: boolean; error?: string }) => {
+					clearTimeout(timer);
+					finish(value ?? { ok: true });
+				},
+			});
+		} catch (err) {
+			clearTimeout(timer);
+			finish({
+				ok: false,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	});
+
+	if (!result.ok) {
+		ctx.ui.notify(result.error ?? "xAI tools action failed.", "error");
+	}
+	// Success toasts are emitted by pi-xai-oauth itself.
+}
+
+async function runShellAction(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext | ExtensionCommandContext,
+	action: Extract<MenuAction, { type: "shell" }>,
+	label: string,
+): Promise<void> {
+	const command = action.command?.trim();
+	if (!command) {
+		ctx.ui.notify("Shell action missing command.", "error");
+		return;
+	}
+	const args = Array.isArray(action.args) ? action.args.map(String) : [];
+	const preview = [command, ...args].join(" ");
+
+	if (action.confirm !== false) {
+		const ok = await ctx.ui.confirm("Run shell command?", preview);
+		if (!ok) {
+			ctx.ui.notify("Shell command cancelled.", "info");
+			return;
+		}
+	}
+
+	try {
+		const result = await pi.exec(command, args, {
+			cwd: action.cwd,
+			timeout: action.timeoutMs,
+		});
+		const out = (result.stdout || result.stderr || "").trim();
+		const summary =
+			out.length > 0
+				? out.split("\n").slice(0, 4).join(" · ").slice(0, 200)
+				: `(no output)`;
+		const level = result.code === 0 ? "info" : "error";
+		ctx.ui.notify(`${label}: exit ${result.code} — ${summary}`, level);
+	} catch (err) {
+		ctx.ui.notify(
+			`${label} failed: ${err instanceof Error ? err.message : String(err)}`,
+			"error",
+		);
+	}
+}
+
 async function runAction(
 	pi: ExtensionAPI,
 	item: ResolvedItem,
@@ -565,6 +732,23 @@ async function runAction(
 			break;
 		case "submit":
 			pi.sendUserMessage(action.text);
+			break;
+		case "command": {
+			const cmd = normalizeSlashCommand(action.command);
+			if (!cmd) {
+				ctx.ui.notify("Command action missing command.", "error");
+				break;
+			}
+			// sendUserMessage skips slash-command execution; prefill so the user can Enter.
+			ctx.ui.setEditorText(cmd);
+			ctx.ui.notify(`Ready: ${cmd}  (press Enter)`, "info");
+			break;
+		}
+		case "xai_tool":
+			await runXaiToolAction(pi, ctx, action);
+			break;
+		case "shell":
+			await runShellAction(pi, ctx, action, item.label);
 			break;
 		case "none":
 		default:

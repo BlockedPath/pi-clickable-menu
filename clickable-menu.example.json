@@ -32,14 +32,94 @@
       }
     },
     {
-      "id": "hello",
-      "label": "Hello notification",
-      "description": "Sanity-check that the menu works",
-      "hotkey": "h",
+      "id": "xai-tools",
+      "label": "xAI tools picker",
+      "description": "Open /xai-tools (enable paid Grok tools)",
+      "hotkey": "x",
       "action": {
-        "type": "notify",
-        "message": "Clickable menu is working.",
-        "level": "info"
+        "type": "xai_tool",
+        "action": "open"
+      }
+    },
+    {
+      "id": "web-search",
+      "label": "Enable web_search",
+      "description": "Opt-in Grok-native web search for this session",
+      "hotkey": "w",
+      "action": {
+        "type": "xai_tool",
+        "action": "enable",
+        "tool": "web_search"
+      }
+    },
+    {
+      "id": "x-search",
+      "label": "Enable X search",
+      "description": "Opt-in xai_x_search for this session",
+      "action": {
+        "type": "xai_tool",
+        "action": "enable",
+        "tool": "xai_x_search"
+      }
+    },
+    {
+      "id": "deep-research",
+      "label": "Enable deep research",
+      "description": "Opt-in xai_deep_research (high cost)",
+      "action": {
+        "type": "xai_tool",
+        "action": "enable",
+        "tool": "xai_deep_research"
+      }
+    },
+    {
+      "id": "multi-agent",
+      "label": "Enable multi-agent",
+      "description": "Opt-in xai_multi_agent research",
+      "action": {
+        "type": "xai_tool",
+        "action": "enable",
+        "tool": "xai_multi_agent"
+      }
+    },
+    {
+      "id": "code-exec",
+      "label": "Enable code execution",
+      "description": "Opt-in xai_code_execution",
+      "action": {
+        "type": "xai_tool",
+        "action": "enable",
+        "tool": "xai_code_execution"
+      }
+    },
+    {
+      "id": "gen-image",
+      "label": "Enable image gen",
+      "description": "Opt-in xai_generate_image",
+      "action": {
+        "type": "xai_tool",
+        "action": "enable",
+        "tool": "xai_generate_image"
+      }
+    },
+    {
+      "id": "xai-status",
+      "label": "xAI tools status",
+      "description": "Show which xAI tools are enabled",
+      "hotkey": "s",
+      "action": {
+        "type": "xai_tool",
+        "action": "status"
+      }
+    },
+    {
+      "id": "xai-usage",
+      "label": "xAI usage",
+      "description": "Prefill /xai-usage (press Enter)",
+      "hotkey": "u",
+      "action": {
+        "type": "command",
+        "command": "/xai-usage"
       }
     }
   ]

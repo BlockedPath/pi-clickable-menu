@@ -77,7 +77,22 @@ cp clickable-menu.example.json ~/.pi/agent/clickable-menu.json
 | `insert` | Set editor text to `text` |
 | `submit` | Send `text` as a user message |
 | `notify` | Toast with `message` (`level`: `info` \| `warning` \| `error`) |
+| `command` | Prefill editor with a slash command (press Enter to run) |
+| `xai_tool` | Drive pi-xai-oauth tools: `open` / `status` / `enable` / `disable` (+ `tool`) |
+| `shell` | Run `command` + `args` via `pi.exec` (confirms by default) |
 | `none` | Notify selected label only |
+
+#### xAI tools (`xai_tool`)
+
+Requires [pi-xai-oauth](https://github.com/BlockedPath/pi-xai-oauth) and an active xAI/Grok model for enable/open.
+
+```json
+{ "type": "xai_tool", "action": "enable", "tool": "web_search" }
+{ "type": "xai_tool", "action": "open" }
+{ "type": "xai_tool", "action": "status" }
+```
+
+Tool names match `/xai-tools`: `web_search`, `xai_x_search`, `xai_deep_research`, `xai_multi_agent`, `xai_code_execution`, `xai_generate_image`, …
 
 If the config file is missing or invalid, built-in defaults are used.
 
