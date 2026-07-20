@@ -1,8 +1,9 @@
 /**
  * Clickable TUI Menu Extension
  *
- * Compact centered overlay: only the menu panel is painted (session stays
- * visible around it). Hit-tests use the same center math as TUI placement.
+ * Compact panel overlay. Layout is written into a shared OverlayOptions object
+ * during render() so TUI places the panel at the same screen row/col used for
+ * mouse hit-testing (avoids center-guess drift under Herdr).
  *
  * Commands:
  *   /menu              open the menu
@@ -174,13 +175,16 @@ const DEBUG_LOG = "/tmp/clickable-menu-debug.log";
 const MOUSE_ENABLE = "\x1b[?1006h\x1b[?1000h\x1b[?1003h";
 const MOUSE_DISABLE = "\x1b[?1003l\x1b[?1000l\x1b[?1006l";
 
-// Compact panel only — no full-height blank strip (that covered the session).
-// TUI re-centers every paint via anchor; we mirror that for mouse hit-tests.
-const OVERLAY: OverlayOptions = {
-	anchor: "center",
-	width: 58,
-	minWidth: 34,
-};
+// Shared layout object: render() writes row/col each paint; TUI reads them
+// immediately after render() when resolving final placement (same frame).
+function createOverlayLayout(): OverlayOptions {
+	return {
+		row: 0,
+		col: 0,
+		width: 58,
+		minWidth: 34,
+	};
+}
 
 let debugEnabled = process.env.PI_MENU_DEBUG === "1";
 
@@ -266,24 +270,6 @@ function parseMouse(data: string): MouseEvent | null {
 	return null;
 }
 
-
-function boxLine(
-	content: string,
-	innerWidth: number,
-	theme: Theme,
-	selected = false,
-): string {
-	const body = truncateToWidth(content, innerWidth, "");
-	const pad = Math.max(0, innerWidth - visibleWidth(body));
-	const filled = body + " ".repeat(pad);
-	const edge = theme.fg("accent", "│");
-	if (selected) {
-		// Highlight full inner row for a large click target.
-		return edge + theme.bg("selectedBg", filled) + edge;
-	}
-	return edge + filled + edge;
-}
-
 // ── Component ────────────────────────────────────────────────────────────────
 
 class ClickableMenuComponent implements Component {
@@ -295,10 +281,12 @@ class ClickableMenuComponent implements Component {
 	private selected = 0;
 	private mouseEnabled = false;
 	private closed = false;
-	/** Absolute 0-based screen rows for each item (mirrors TUI center placement). */
+	/** Absolute 0-based screen rows for each item. */
 	private itemScreenRows: number[] = [];
 	/** Inclusive panel bounds in screen coords (0-based). */
 	private panel = { top: 0, bottom: 0, left: 0, right: 0 };
+	/** Same object passed to TUI as overlayOptions; mutated in render(). */
+	private readonly overlayLayout: OverlayOptions;
 	private reenableTimer?: ReturnType<typeof setTimeout>;
 
 	constructor(
@@ -307,12 +295,14 @@ class ClickableMenuComponent implements Component {
 		theme: Theme,
 		tui: TUI,
 		done: (item: ResolvedItem | null) => void,
+		overlayLayout: OverlayOptions,
 	) {
 		this.items = items;
 		this.title = title;
 		this.theme = theme;
 		this.tui = tui;
 		this.done = done;
+		this.overlayLayout = overlayLayout;
 		this.enableMouse();
 		this.reenableTimer = setTimeout(() => this.enableMouse(true), 50);
 	}
@@ -511,8 +501,8 @@ class ClickableMenuComponent implements Component {
 	}
 
 	/**
-	 * Paint only the menu panel (contentRows lines). TUI centers via anchor;
-	 * we store the same screen bounds for mouse hit-testing.
+	 * Paint only the menu panel. Writes absolute screen row/col into overlayLayout
+	 * so TUI composites at the same coords we hit-test against.
 	 */
 	render(width: number): string[] {
 		this.enableMouse(true);
@@ -520,15 +510,18 @@ class ClickableMenuComponent implements Component {
 		const theme = this.theme;
 		const termRows = Math.max(3, this.tui.terminal.rows || 24);
 		const termCols = Math.max(20, this.tui.terminal.columns || width);
-		// `width` is TUI's resolved overlay width (minWidth / terminal clamp).
 		const panelWidth = Math.max(20, width);
 		const panelInner = Math.max(1, panelWidth - 2);
 
 		// Content rows: top border, title, blank, items, blank, hint, bottom
 		const contentRows = 1 + 1 + 1 + this.items.length + 1 + 1 + 1;
-		// Match TUI resolveAnchorRow/Col for anchor: "center" (margin 0).
 		const panelTop = Math.max(0, Math.floor((termRows - contentRows) / 2));
 		const panelLeft = Math.max(0, Math.floor((termCols - panelWidth) / 2));
+
+		// Drive TUI placement for this frame (same object as overlayOptions).
+		this.overlayLayout.row = panelTop;
+		this.overlayLayout.col = panelLeft;
+		this.overlayLayout.width = panelWidth;
 
 		this.panel = {
 			top: panelTop,
@@ -538,9 +531,9 @@ class ClickableMenuComponent implements Component {
 		};
 		this.itemScreenRows = [];
 
-		const hBar = theme.fg("accent", "─".repeat(panelInner));
-		const topBorder = theme.fg("accent", "┌") + hBar + theme.fg("accent", "┐");
-		const botBorder = theme.fg("accent", "└") + hBar + theme.fg("accent", "┘");
+		const hBar = theme.fg("accent", "-".repeat(panelInner));
+		const topBorder = theme.fg("accent", "+") + hBar + theme.fg("accent", "+");
+		const botBorder = theme.fg("accent", "+") + hBar + theme.fg("accent", "+");
 
 		const paintPanelRow = (rowText: string): string => {
 			const mid = truncateToWidth(rowText, panelWidth, "");
@@ -549,14 +542,21 @@ class ClickableMenuComponent implements Component {
 		};
 
 		const lines: string[] = [];
-		lines.push(paintPanelRow(topBorder));
+		const edge = theme.fg("accent", "|");
+		const box = (content: string, selected = false): string => {
+			const body = truncateToWidth(content, panelInner, "");
+			const pad = Math.max(0, panelInner - visibleWidth(body));
+			const filled = body + " ".repeat(pad);
+			if (selected) return edge + theme.bg("selectedBg", filled) + edge;
+			return edge + filled + edge;
+		};
 
+		lines.push(paintPanelRow(topBorder));
 		const title = theme.fg("accent", theme.bold(` ${this.title}`));
-		lines.push(paintPanelRow(boxLine(title, panelInner, theme)));
-		lines.push(paintPanelRow(boxLine("", panelInner, theme)));
+		lines.push(paintPanelRow(box(title)));
+		lines.push(paintPanelRow(box("")));
 
 		for (let i = 0; i < this.items.length; i++) {
-			// Item rows start after top border + title + blank.
 			this.itemScreenRows.push(panelTop + 3 + i);
 			const item = this.items[i]!;
 			const isSel = i === this.selected;
@@ -565,18 +565,19 @@ class ClickableMenuComponent implements Component {
 				item.hotkey && !(item.hotkey >= "1" && item.hotkey <= "9")
 					? ` [${item.hotkey}]`
 					: "";
-			const prefix = isSel ? "→ " : "  ";
-			const desc = item.description ? ` — ${item.description}` : "";
+			// Fixed-width ASCII chrome (Unicode arrows can be double-width in some terminals).
+			const prefix = isSel ? "> " : "  ";
+			const desc = item.description ? ` - ${item.description}` : "";
 			const raw = `${prefix}${num} ${item.label}${hot}${desc}`;
 			const styled = isSel
 				? theme.fg("accent", theme.bold(raw))
 				: theme.fg("text", raw);
-			lines.push(paintPanelRow(boxLine(` ${styled}`, panelInner, theme, isSel)));
+			lines.push(paintPanelRow(box(` ${styled}`, isSel)));
 		}
 
-		lines.push(paintPanelRow(boxLine("", panelInner, theme)));
-		const hint = theme.fg("dim", " click row · ↑↓ · 1-9 · esc ");
-		lines.push(paintPanelRow(boxLine(hint, panelInner, theme)));
+		lines.push(paintPanelRow(box("")));
+		const hint = theme.fg("dim", " click row | up/down | 1-9 | esc ");
+		lines.push(paintPanelRow(box(hint)));
 		lines.push(paintPanelRow(botBorder));
 
 		debugLog("render", {
@@ -584,6 +585,11 @@ class ClickableMenuComponent implements Component {
 			termCols,
 			panelWidth,
 			contentRows,
+			layout: {
+				row: this.overlayLayout.row,
+				col: this.overlayLayout.col,
+				width: this.overlayLayout.width,
+			},
 			panel: this.panel,
 			itemScreenRows: this.itemScreenRows,
 			selected: this.selected,
@@ -765,10 +771,18 @@ export default function clickableMenuExtension(pi: ExtensionAPI) {
 		const title = config.title ?? "Quick Menu";
 		debugLog("open-menu", { title, count: items.length, debugEnabled });
 
+		const overlayLayout = createOverlayLayout();
 		const selected = await ctx.ui.custom<ResolvedItem | null>(
 			(tui, theme, _kb, done) =>
-				new ClickableMenuComponent(items, title, theme, tui, done),
-			{ overlay: true, overlayOptions: OVERLAY },
+				new ClickableMenuComponent(
+					items,
+					title,
+					theme,
+					tui,
+					done,
+					overlayLayout,
+				),
+			{ overlay: true, overlayOptions: overlayLayout },
 		);
 
 		if (!selected) return;
